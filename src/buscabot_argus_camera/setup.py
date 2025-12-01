@@ -20,7 +20,7 @@ setup(
     tests_require=['pytest'],
     entry_points={
         'console_scripts': [
-            'argus_camera = buscabot_argus_camera.argus_camera_node:main',
+            'argus_camera_node = buscabot_argus_camera.argus_camera_node:main',
         ],
     },
 )

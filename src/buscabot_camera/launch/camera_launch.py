@@ -1,6 +1,7 @@
 from launch import LaunchDescription
 from launch_ros.actions import Node
 
+
 def generate_launch_description():
     return LaunchDescription([
         Node(
@@ -10,14 +11,10 @@ def generate_launch_description():
             output='screen',
             parameters=[{
                 'image_size': [640, 480],
-                'frame_rate': 30
-            }]
+                'frame_rate': 30,
+            }],
+            # Si más adelante queremos remappings, van aquí dentro,
+            # por ahora lo dejamos simple y correcto.
         ),
-        Node(
-            package='image_view',
-            executable='image_view',
-            name='viewer',
-            output='screen',
-            remappings=[('image', '/image_raw')]
-        )
     ])
+
