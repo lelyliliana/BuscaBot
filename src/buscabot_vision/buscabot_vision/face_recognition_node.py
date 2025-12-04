@@ -17,6 +17,51 @@ GALLERY_DIR.mkdir(parents=True, exist_ok=True)
 
 # Archivo donde vamos a guardar el último estado de reconocimiento
 STATUS_PATH = GALLERY_DIR / "face_status.txt"
+TARGET_JSON = GALLERY_DIR / "target_current.json"
+last_target_mtime = None   # Para saber si el archivo cambió
+current_target_name = None
+current_target_emb = None
+
+def cargar_objetivo_actual():
+    """
+    Lee ~/.buscabot_face_gallery/target_current.json
+    y actualiza las variables globales si el archivo cambió.
+    Devuelve:
+        True  -> si se recargó un objetivo nuevo
+        False -> si no hubo cambios
+    """
+    global last_target_mtime, current_target_name, current_target_emb
+
+    if not TARGET_JSON.exists():
+        # Si aún no hay objetivo guardado, no hacemos nada
+        return False
+
+    # Comprobar si el archivo cambió (mtime = fecha de modificación)
+    mtime = TARGET_JSON.stat().st_mtime
+    if last_target_mtime is not None and mtime == last_target_mtime:
+        # No ha cambiado
+        return False
+
+    # Leer JSON
+    data = json.loads(TARGET_JSON.read_text())
+
+    # Nombre legible de la persona
+    nombre = data.get("person_name", "Persona buscada")
+
+    # Embedding como vector numpy y normalizado
+    emb = np.array(data["embedding"], dtype=np.float32)
+    norm = np.linalg.norm(emb)
+    if norm == 0:
+        raise RuntimeError("El embedding cargado tiene norma 0")
+
+    emb = emb / norm
+
+    # Actualizar variables globales
+    current_target_name = nombre
+    current_target_emb = emb
+    last_target_mtime = mtime
+
+    return True
 
 
 def load_target_embedding(name: str) -> np.ndarray:
@@ -47,35 +92,32 @@ class FaceRecognitionNode(Node):
         # -------------------------------
         # Parámetro del objetivo actual
         # -------------------------------
-        self.target_name = self.declare_parameter(
-            'target_name', 'target_current'
-        ).get_parameter_value().string_value
-
-        # Umbral base
+        # Parámetro: umbral base
         self.similarity_threshold = self.declare_parameter(
             'similarity_threshold', 0.35
         ).get_parameter_value().double_value
 
-        # Margen adicional
+        # Margen adicional para evitar falsos positivos
         self.margin = 0.05
 
-        # -------------------------------
-        # Cargar embedding del objetivo
-        # -------------------------------
-        self.get_logger().info(f"Cargando embedding de: {self.target_name}")
-        self.target_embedding = load_target_embedding(self.target_name)
+        # Cargar objetivo inicial desde target_current.json
+        self.get_logger().info("Cargando objetivo inicial desde target_current.json ...")
+        changed = cargar_objetivo_actual()
 
-        # -------------------------------
-        # Cargar nombre legible desde JSON
-        # -------------------------------
-        json_path = GALLERY_DIR / f"{self.target_name}.json"
-        data = json.loads(json_path.read_text())
+        # Si no cambió pero tampoco hay nada cargado, es un error
+        if current_target_emb is None:
+            raise RuntimeError(
+                "No se pudo cargar ningún objetivo desde "
+                f"{TARGET_JSON}. Sube primero una foto con la web."
+            )
 
-        # Soportar formato nuevo ("name") y antiguo ("person_name")
-        self.person_label = data.get("name", data.get("person_name", "Persona buscada"))
+        # Guardar en atributos de la instancia
+        self.person_label = current_target_name or "Persona buscada"
+        self.target_embedding = current_target_emb
 
         self.get_logger().info(
-            f"Embedding cargado. Norma = {np.linalg.norm(self.target_embedding):.3f}"
+            f"Objetivo inicial: {self.person_label} "
+            f"(norma = {np.linalg.norm(self.target_embedding):.3f})"
         )
 
         # -------------------------------
@@ -118,6 +160,24 @@ class FaceRecognitionNode(Node):
     def image_callback(self, msg: Image):
         # Convertir a OpenCV
         frame = self.bridge.imgmsg_to_cv2(msg, desired_encoding="bgr8")
+
+        # 👀 Revisar si cambió el archivo target_current.json
+        changed = cargar_objetivo_actual()
+        if changed:
+            # Actualizar objetivo en este nodo
+            self.person_label = current_target_name or "Persona buscada"
+            self.target_embedding = current_target_emb
+
+            self.get_logger().info(
+                f"Nuevo objetivo cargado: {self.person_label} "
+                f"(norma = {np.linalg.norm(self.target_embedding):.3f})"
+            )
+
+            # Opcional: escribir un mensaje especial en el archivo de estado
+            try:
+                STATUS_PATH.write_text(f"Nuevo objetivo cargado: {self.person_label}\n")
+            except Exception as e:
+                self.get_logger().warn(f"No pude escribir STATUS_PATH: {e}")
 
         # Detectar rostros
         faces = self.app.get(frame)
